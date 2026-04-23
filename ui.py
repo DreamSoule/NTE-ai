@@ -1,4 +1,3 @@
-# ui.py
 import sys
 import os
 import subprocess
@@ -8,9 +7,9 @@ from pathlib import Path
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QTextEdit, QLabel, QTabWidget, QGroupBox,
                              QGridLayout, QMessageBox, QApplication, QGraphicsDropShadowEffect,
-                             QLineEdit)
-from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QObject
-from PyQt5.QtGui import QIcon, QColor
+                             QLineEdit, QComboBox)
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QObject, QUrl
+from PyQt5.QtGui import QIcon, QColor, QDesktopServices
 import pyautogui
 import pygetwindow as gw
 
@@ -18,7 +17,7 @@ from config import APP_NAME, VERSION, IMAGES_DIR
 from automation_thread import AutomationThread
 from auto_updater import AutoUpdater
 from floating_log import FloatingLogWindow
-QTimer.singleShot(1500, self.check_for_updates)
+
 class HotKeySignals(QObject):
     toggle_signal = pyqtSignal()
 
@@ -28,7 +27,7 @@ class NeonMainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
         self.setGeometry(200, 100, 900, 700)
 
-        # 图标
+        # 图标（可选）
         if Path("Windowslogo.ico").exists():
             self.setWindowIcon(QIcon("Windowslogo.ico"))
         if Path("titlelogo.ico").exists():
@@ -45,10 +44,21 @@ class NeonMainWindow(QMainWindow):
             QPushButton:pressed { background-color: #009999; }
             QGroupBox { border: 1px solid #00ffcc; border-radius: 8px; margin-top: 12px; font: bold 12px "Microsoft YaHei"; color: #00ffcc; }
             QGroupBox::title { subcontrol-origin: margin; left: 15px; padding: 0 8px; }
-            QTextEdit, QLabel, QLineEdit { background-color: #0f1622; color: #ccfffc; border: 1px solid #2a3a55; border-radius: 6px; font: 10pt "Consolas"; }
+            QTextEdit, QLabel, QLineEdit, QComboBox { background-color: #0f1622; color: #ccfffc; border: 1px solid #2a3a55; border-radius: 6px; font: 10pt "Consolas"; }
             QLabel#codeLabel { background-color: #1a2332; border: 1px solid #00ffcc; border-radius: 6px; padding: 6px; font: 10pt "Microsoft YaHei"; }
             QLabel#codeLabel:hover { background-color: #2a3a55; border: 1px solid #00ffff; }
         """)
+
+        # 菜单栏
+        menubar = self.menuBar()
+        help_menu = menubar.addMenu("帮助")
+        check_update_action = help_menu.addAction("检查更新")
+        check_update_action.triggered.connect(self.check_for_updates)
+        join_menu = menubar.addMenu("加入我们")
+        copy_qq_action = join_menu.addAction("复制QQ群号：796636370")
+        copy_qq_action.triggered.connect(self.copy_qq_number)
+        join_qq_action = join_menu.addAction("加入QQ群")
+        join_qq_action.triggered.connect(self.open_qq_group)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -58,53 +68,52 @@ class NeonMainWindow(QMainWindow):
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
-        # 创建五个选项卡
+        # 六个选项卡
         self.tab_skip = QWidget()
         self.tab_battle = QWidget()
         self.tab_codes = QWidget()
         self.tab_fishing = QWidget()
         self.tab_mahjong = QWidget()
+        self.tab_jioin = QWidget()
+
         self.tab_widget.addTab(self.tab_skip, "✨快速剧情")
         self.tab_widget.addTab(self.tab_battle, "⚔️战斗宏")
         self.tab_widget.addTab(self.tab_codes, "🎁兑奖码")
         self.tab_widget.addTab(self.tab_fishing, "🎣AI钓鱼")
         self.tab_widget.addTab(self.tab_mahjong, "🀄AI麻将")
+        self.tab_widget.addTab(self.tab_jioin, "加入我们")
 
-        # 初始化各个选项卡
         self.init_tab_skip()
         self.init_tab_battle()
         self.init_tab_codes()
         self.init_tab_fishing()
         self.init_tab_mahjong()
+        self.init_tab_jioin()
 
-        # 自动化线程相关
         self.automation_thread = None
         self.target_window_title = ""
-
-        # 浮动日志窗口
         self.floating_log = FloatingLogWindow()
 
-        # 钓鱼子进程相关
         self.fishing_process = None
         self.fishing_stdout_queue = queue.Queue()
         self.fishing_output_thread = None
         self.fishing_error_thread = None
         self.fishing_timer = None
 
-        # 霓虹外发光效果
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(25)
         shadow.setColor(QColor(0, 255, 204, 120))
         shadow.setOffset(0, 0)
         self.setGraphicsEffect(shadow)
 
-        # 自动检测异环窗口
         QTimer.singleShot(500, self.auto_detect_window)
 
-        # 全局热键 F12
         self.hotkey_signals = HotKeySignals()
         self.hotkey_signals.toggle_signal.connect(self.toggle_automation)
         self.start_hotkey_listener()
+
+        # 启动时不禁用自动检查，但可由菜单手动触发
+        # QTimer.singleShot(1500, self.check_for_updates)   # 可选
 
     # ---------- 全局热键 ----------
     def start_hotkey_listener(self):
@@ -125,7 +134,7 @@ class NeonMainWindow(QMainWindow):
         else:
             self.start_automation()
 
-    # ---------- 页面1：任务自动跳过 ----------
+    # ---------- 页面1：快速剧情 ----------
     def init_tab_skip(self):
         layout = QVBoxLayout(self.tab_skip)
         btn_layout = QHBoxLayout()
@@ -169,7 +178,9 @@ class NeonMainWindow(QMainWindow):
 
     def auto_detect_window(self):
         try:
+            current_title = self.windowTitle()
             windows = gw.getWindowsWithTitle("异环")
+            windows = [w for w in windows if w.title != current_title]
             if windows:
                 title = windows[0].title
                 self.title_edit.setText(title)
@@ -185,19 +196,19 @@ class NeonMainWindow(QMainWindow):
         else:
             self.floating_log.show()
 
-    # ---------- 页面2：自动战斗（占位）----------
+    # ---------- 页面2：战斗宏 ----------
     def init_tab_battle(self):
         layout = QVBoxLayout(self.tab_battle)
-        group = QGroupBox("自动战斗 (开发中)")
+        group = QGroupBox("战斗宏 (开发中)")
         group_layout = QVBoxLayout(group)
-        info_label = QLabel("⚙️ 自动战斗功能正在加紧开发，敬请期待！")
+        info_label = QLabel("⚙️ 战斗宏功能正在加紧开发，敬请期待！")
         info_label.setAlignment(Qt.AlignCenter)
         info_label.setStyleSheet("font-size: 14px; color: #ffaa88; padding: 20px;")
         group_layout.addWidget(info_label)
         group_layout.addStretch()
         layout.addWidget(group)
 
-    # ---------- 页面3：兑奖码仓库 ----------
+    # ---------- 页面3：兑奖码 ----------
     def init_tab_codes(self):
         layout = QVBoxLayout(self.tab_codes)
         layout.setSpacing(20)
@@ -227,7 +238,7 @@ class NeonMainWindow(QMainWindow):
         layout.addWidget(info)
         layout.addStretch()
 
-    # ---------- 页面4：AI 钓鱼（调用外部脚本，编码修复）----------
+    # ---------- 页面4：AI钓鱼 ----------
     def init_tab_fishing(self):
         layout = QVBoxLayout(self.tab_fishing)
         btn_layout = QHBoxLayout()
@@ -241,28 +252,66 @@ class NeonMainWindow(QMainWindow):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+        # 窗口选择行
+        window_select_layout = QHBoxLayout()
+        window_select_layout.addWidget(QLabel("🎯 钓鱼目标窗口："))
+        self.fishing_window_combo = QComboBox()
+        self.fishing_window_combo.setMinimumWidth(300)
+        self.refresh_btn = QPushButton("🔄 刷新窗口列表")
+        self.refresh_btn.clicked.connect(self.refresh_fishing_window_list)
+        window_select_layout.addWidget(self.fishing_window_combo)
+        window_select_layout.addWidget(self.refresh_btn)
+        window_select_layout.addStretch()
+        layout.addLayout(window_select_layout)
+
         self.fishing_log = QTextEdit()
         self.fishing_log.setReadOnly(True)
         self.fishing_log.setMaximumHeight(400)
         layout.addWidget(QLabel("📋 钓鱼日志"))
         layout.addWidget(self.fishing_log)
 
-        tip = QLabel("💡 提示：钓鱼逻辑使用独立的 fishing.py 和 controlfishing.py。\n如果启动后立即退出，请先在命令行运行 fishing.py 检查错误。")
+        tip = QLabel("💡 提示：请先点击“刷新窗口列表”，然后选择游戏窗口，再点击“开始钓鱼”。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#88aaff;")
         layout.addWidget(tip)
 
+    def refresh_fishing_window_list(self):
+        """刷新钓鱼窗口下拉列表，排除自身"""
+        import win32gui
+        self.fishing_window_combo.clear()
+        current_title = self.windowTitle()
+        def enum_cb(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                if title and title != current_title:
+                    self.fishing_window_combo.addItem(title, hwnd)
+        win32gui.EnumWindows(enum_cb, None)
+
+    def get_selected_fishing_hwnd(self):
+        """获取当前选中的钓鱼窗口句柄"""
+        return self.fishing_window_combo.currentData()
+
     def start_fishing(self):
         if self.fishing_process and self.fishing_process.poll() is None:
             self.log_to_fishing("[警告] 钓鱼进程已在运行")
+            return
+        self._do_start_fishing()
+
+    def _do_start_fishing(self):
+        if self.fishing_process and self.fishing_process.poll() is None:
+            self.log_to_fishing("[警告] 钓鱼进程已在运行")
+            return
+        hwnd = self.get_selected_fishing_hwnd()
+        if hwnd is None:
+            self.log_to_fishing("[错误] 请先选择一个目标窗口（点击“刷新窗口列表”并选中游戏窗口）")
             return
         script_path = os.path.join(os.path.dirname(__file__), "fishing.py")
         if not os.path.exists(script_path):
             self.log_to_fishing(f"[错误] 找不到钓鱼脚本: {script_path}")
             return
         env = os.environ.copy()
+        env["FISHING_TARGET_HWND"] = str(hwnd)
         env["PYTHONUNBUFFERED"] = "1"
-        # 关键：使用 utf-8 编码，并忽略解码错误
         self.fishing_process = subprocess.Popen(
             [sys.executable, "-u", script_path],
             stdout=subprocess.PIPE,
@@ -352,12 +401,24 @@ class NeonMainWindow(QMainWindow):
         scroll = self.fishing_log.verticalScrollBar()
         scroll.setValue(scroll.maximum())
 
-    # ---------- 页面5：AI 麻将（占位）----------
+    # ---------- 页面5：AI麻将 ----------
     def init_tab_mahjong(self):
         layout = QVBoxLayout(self.tab_mahjong)
         group = QGroupBox("🀄 AI 麻将（开发中）")
         group_layout = QVBoxLayout(group)
         info_label = QLabel("🀄 智能麻将 AI 正在开发中\n\n功能规划：\n• 自动识别手牌\n• 智能出牌策略\n• 听牌检测")
+        info_label.setAlignment(Qt.AlignCenter)
+        info_label.setStyleSheet("font-size: 13px; color: #ffcc88; padding: 30px; line-height: 1.8;")
+        group_layout.addWidget(info_label)
+        group_layout.addStretch()
+        layout.addWidget(group)
+
+    # ---------- 页面6：加入我们 ----------
+    def init_tab_jioin(self):
+        layout = QVBoxLayout(self.tab_jioin)
+        group = QGroupBox("QQ群：796636370")
+        group_layout = QVBoxLayout(group)
+        info_label = QLabel("点击投币支持一下\n\n不要白嫖\n不要白嫖\n不要白嫖\n不要白嫖")
         info_label.setAlignment(Qt.AlignCenter)
         info_label.setStyleSheet("font-size: 13px; color: #ffcc88; padding: 30px; line-height: 1.8;")
         group_layout.addWidget(info_label)
@@ -381,6 +442,17 @@ class NeonMainWindow(QMainWindow):
             QTimer.singleShot(200, lambda: lbl.setStyleSheet(original_style))
         lbl.mousePressEvent = lambda event: on_click()
         return lbl
+
+    # ---------- 菜单栏功能 ----------
+    def copy_qq_number(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText("796636370")
+        self.log_signal_ui("[提示] QQ群号已复制到剪贴板")
+
+    def open_qq_group(self):
+        url = QUrl("https://qm.qq.com/q/AY3CBGiNAk")
+        QDesktopServices.openUrl(url)
+        self.log_signal_ui("[提示] 正在打开QQ群加入页面")
 
     # ---------- 自动化控制 ----------
     def start_automation(self):
@@ -422,6 +494,12 @@ class NeonMainWindow(QMainWindow):
     def log_signal_ui(self, msg: str):
         from utils import log_message
         self.log_text.append(log_message(msg))
+        if self.log_text.document().blockCount() > 500:
+            cursor = self.log_text.textCursor()
+            cursor.movePosition(cursor.Start)
+            cursor.select(cursor.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
         scroll = self.log_text.verticalScrollBar()
         scroll.setValue(scroll.maximum())
 

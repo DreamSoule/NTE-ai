@@ -1,4 +1,3 @@
-# controlfishing.py
 import cv2
 import numpy as np
 import pydirectinput
@@ -9,7 +8,6 @@ import queue
 from PIL import ImageGrab
 import sys
 import os
-import traceback
 
 def resource_path(relative_path):
     try:
@@ -22,31 +20,30 @@ IMG_DIR = "fishingimages"
 TEMPLATE_HS = resource_path(os.path.join(IMG_DIR, "hs.png"))
 TEMPLATE_DDS = resource_path(os.path.join(IMG_DIR, "dds.png"))
 
-WINDOW_TITLE = "异环"          # 窗口标题关键字
-ROI = (597, 55, 1328, 88)      # 鱼漂区域 (左, 上, 右, 下) 相对于窗口客户区
+WINDOW_TITLE = "异环"
+ROI = (597, 61, 1328, 85)          # 根据实际窗口调整
 MATCH_THRESH = 0.6
-CAPTURE_DELAY = 0.0005         # 0.5毫秒截图间隔
+CAPTURE_DELAY = 0.0
 
 pos_queue = queue.Queue(maxsize=1)
 
 def get_hwnd():
-    """获取包含 WINDOW_TITLE 的窗口句柄"""
+    """备用自动查找（不使用 PID 比较，仅通过标题排除自身）"""
     def cb(hwnd, lst):
-        if win32gui.IsWindowVisible(hwnd) and WINDOW_TITLE in win32gui.GetWindowText(hwnd):
-            lst.append(hwnd)
+        if win32gui.IsWindowVisible(hwnd):
+            title = win32gui.GetWindowText(hwnd)
+            if "异环" in title and "异环薄荷AI" not in title:
+                lst.append(hwnd)
     lst = []
     win32gui.EnumWindows(cb, lst)
     return lst[0] if lst else None
 
 def find_center(gray, tpl, th):
-    try:
-        res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
-        _, maxv, _, maxloc = cv2.minMaxLoc(res)
-        if maxv >= th:
-            h, w = tpl.shape
-            return (maxloc[0] + w//2, maxloc[1] + h//2)
-    except Exception as e:
-        print(f"[controlfishing] 匹配异常: {e}")
+    res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
+    _, maxv, _, maxloc = cv2.minMaxLoc(res)
+    if maxv >= th:
+        h, w = tpl.shape
+        return (maxloc[0] + w//2, maxloc[1] + h//2)
     return None
 
 def capture_worker(hwnd, hs_tpl, dds_tpl, stop_event):
@@ -71,20 +68,31 @@ def capture_worker(hwnd, hs_tpl, dds_tpl, stop_event):
                         pos_queue.put_nowait((hs_x, dds_x))
                     except:
                         pass
-        except Exception as e:
-            print(f"[controlfishing] 截图处理异常: {e}")
-        time.sleep(CAPTURE_DELAY)
+        except:
+            pass
 
 def control_worker(stop_event):
     DEAD_ZONE = 2
-    PULSE_LONG = 0.012
-    PULSE_MID = 0.008
-    PULSE_SHORT = 0.003
-    BRAKE_PULSE = 0.010
+    PULSE_VERY_SHORT = 0.005
+    PULSE_SHORT = 0.010
+    PULSE_MEDIUM = 0.020
+    PULSE_LONG = 0.035
+    BRAKE_PULSE = 0.015
 
     last_dds_x = None
-    stationary_counter = 0
+    static_cnt = 0
     last_hs_x = None
+    key_a = False
+    key_d = False
+
+    def release_all():
+        nonlocal key_a, key_d
+        if key_a:
+            pydirectinput.keyUp('a')
+            key_a = False
+        if key_d:
+            pydirectinput.keyUp('d')
+            key_d = False
 
     while not stop_event.is_set():
         try:
@@ -93,86 +101,106 @@ def control_worker(stop_event):
             continue
 
         if last_dds_x is not None and abs(dds_x - last_dds_x) <= 1:
-            stationary_counter += 1
+            static_cnt += 1
         else:
-            stationary_counter = 0
+            static_cnt = 0
         last_dds_x = dds_x
-
-        if stationary_counter >= 3:
-            pydirectinput.keyUp('a')
-            pydirectinput.keyUp('d')
-            continue
 
         diff = hs_x - dds_x
         abs_diff = abs(diff)
 
+        if static_cnt >= 3:
+            release_all()
+            if abs_diff > DEAD_ZONE:
+                for _ in range(2):
+                    if diff > 0:
+                        pydirectinput.keyDown('a')
+                        time.sleep(BRAKE_PULSE)
+                        pydirectinput.keyUp('a')
+                    else:
+                        pydirectinput.keyDown('d')
+                        time.sleep(BRAKE_PULSE)
+                        pydirectinput.keyUp('d')
+            time.sleep(0.05)
+            continue
+
         if last_hs_x is not None:
-            last_diff = last_hs_x - dds_x
-            if last_diff * diff < 0 and abs_diff > DEAD_ZONE:
+            prev_diff = last_hs_x - dds_x
+            if prev_diff * diff < 0 and abs_diff > DEAD_ZONE:
+                release_all()
                 if diff > 0:
-                    pydirectinput.keyUp('a')
-                    pydirectinput.keyUp('d')
                     pydirectinput.keyDown('a')
                     time.sleep(BRAKE_PULSE)
                     pydirectinput.keyUp('a')
                 else:
-                    pydirectinput.keyUp('a')
-                    pydirectinput.keyUp('d')
                     pydirectinput.keyDown('d')
                     time.sleep(BRAKE_PULSE)
+                    pydirectinput.keyUp('d')
+                time.sleep(0.005)
+                try:
+                    hs_x2, dds_x2 = pos_queue.get_nowait()
+                    diff2 = hs_x2 - dds_x2
+                except queue.Empty:
+                    diff2 = diff
+                if diff2 > DEAD_ZONE and hs_x2 > dds_x2:
+                    pydirectinput.keyDown('a')
+                    time.sleep(PULSE_LONG)
+                    pydirectinput.keyUp('a')
+                elif diff2 < -DEAD_ZONE and hs_x2 < dds_x2:
+                    pydirectinput.keyDown('d')
+                    time.sleep(PULSE_LONG)
                     pydirectinput.keyUp('d')
                 last_hs_x = hs_x
                 continue
 
-        if abs_diff <= DEAD_ZONE:
-            pass
-        else:
-            if abs_diff > 15:
-                pulse = PULSE_LONG
-            elif abs_diff > 7:
-                pulse = PULSE_MID
-            else:
-                pulse = PULSE_SHORT
+        can_press_a = (diff > 0) and (hs_x > dds_x)
+        can_press_d = (diff < 0) and (hs_x < dds_x)
 
-            if diff > 0:
-                if hs_x > dds_x:
-                    pydirectinput.keyUp('d')
-                    pydirectinput.keyDown('a')
-                    time.sleep(pulse)
-                    pydirectinput.keyUp('a')
+        if abs_diff <= DEAD_ZONE:
+            release_all()
+        else:
+            if abs_diff > 20:
+                pulse = PULSE_LONG
+            elif abs_diff > 12:
+                pulse = PULSE_MEDIUM
+            elif abs_diff > 6:
+                pulse = PULSE_SHORT
             else:
-                if hs_x < dds_x:
-                    pydirectinput.keyUp('a')
-                    pydirectinput.keyDown('d')
-                    time.sleep(pulse)
-                    pydirectinput.keyUp('d')
+                pulse = PULSE_VERY_SHORT
+
+            if can_press_a:
+                release_all()
+                pydirectinput.keyDown('a')
+                time.sleep(pulse)
+                pydirectinput.keyUp('a')
+            elif can_press_d:
+                release_all()
+                pydirectinput.keyDown('d')
+                time.sleep(pulse)
+                pydirectinput.keyUp('d')
+            else:
+                release_all()
 
         last_hs_x = hs_x
 
-    pydirectinput.keyUp('a')
-    pydirectinput.keyUp('d')
+    release_all()
 
-def start_follow(stop_event):
-    try:
+def start_follow(stop_event, target_hwnd=None):
+    if target_hwnd is None:
         hwnd = get_hwnd()
-        if not hwnd:
-            print("错误：未找到包含 '%s' 的窗口" % WINDOW_TITLE)
-            return False
-        print(f"找到窗口句柄: {hwnd}")
-        hs = cv2.imread(TEMPLATE_HS, cv2.IMREAD_GRAYSCALE)
-        dds = cv2.imread(TEMPLATE_DDS, cv2.IMREAD_GRAYSCALE)
-        if hs is None:
-            print(f"错误：无法读取模板图片 {TEMPLATE_HS}")
-            return False
-        if dds is None:
-            print(f"错误：无法读取模板图片 {TEMPLATE_DDS}")
-            return False
-        t1 = threading.Thread(target=capture_worker, args=(hwnd, hs, dds, stop_event), daemon=True)
-        t2 = threading.Thread(target=control_worker, args=(stop_event,), daemon=True)
-        t1.start()
-        t2.start()
-        return True
-    except Exception as e:
-        print(f"启动跟随异常: {e}")
-        traceback.print_exc()
+    else:
+        hwnd = target_hwnd
+    if not hwnd:
+        print("找不到窗口")
         return False
+    print(f"找到窗口句柄: {hwnd}")
+    hs = cv2.imread(TEMPLATE_HS, cv2.IMREAD_GRAYSCALE)
+    dds = cv2.imread(TEMPLATE_DDS, cv2.IMREAD_GRAYSCALE)
+    if hs is None or dds is None:
+        print("模板图片不存在，请检查 fishingimages 文件夹")
+        return False
+    t1 = threading.Thread(target=capture_worker, args=(hwnd, hs, dds, stop_event), daemon=True)
+    t2 = threading.Thread(target=control_worker, args=(stop_event,), daemon=True)
+    t1.start()
+    t2.start()
+    return True

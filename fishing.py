@@ -1,4 +1,3 @@
-# fishing.py
 import sys
 import os
 import time
@@ -66,30 +65,26 @@ def random_click(pos, offset=10):
 def fish_logic():
     global fish_count
     try:
-        # 第一阶段：等待 panduandiaoyu.png 出现前处理其他图片
+        # 第一阶段
         print("开始监测：diaoyu, kaishidiaoyu, dianjikongbai, panduandiaoyu ...")
         last_prompt = time.time()
         while not global_stop.is_set():
-            # diaoyu.png -> 按F
             pos = find_image(PATH_DIAOYU)
             if pos:
                 print("发现 diaoyu.png，按F")
                 pydirectinput.press('f')
                 time.sleep(0.02)
                 continue
-            # kaishidiaoyu.png -> 随机点击
             pos = find_image(PATH_KAISHIDIAOYU)
             if pos:
                 print("发现 kaishidiaoyu.png，随机点击")
                 random_click(pos)
                 continue
-            # dianjikongbai.png -> 随机点击
             pos = find_image(PATH_DIANJIKONGBAI)
             if pos:
                 print("发现 dianjikongbai.png，随机点击")
                 random_click(pos)
                 continue
-            # panduandiaoyu.png -> 按F并退出循环
             pos = find_image(PATH_PANDUANDIAOYU)
             if pos:
                 print("发现 panduandiaoyu.png，按F退出监测")
@@ -100,7 +95,7 @@ def fish_logic():
                 last_prompt = time.time()
             time.sleep(0.02)
 
-        # 第二阶段：等待 yu1.png 和 yu.png
+        # 第二阶段
         print("等待 yu1.png 和 yu.png ...")
         found1 = False
         found2 = False
@@ -122,14 +117,17 @@ def fish_logic():
             print("未同时找到两个鱼图")
             return False
 
-        # 第三阶段：启动跟随
+        # 第三阶段：启动跟随，使用环境变量传递的窗口句柄
         print("开始跟随...")
         stop_event = threading.Event()
-        if not controlfishing.start_follow(stop_event):
+        target_hwnd = os.environ.get("FISHING_TARGET_HWND", None)
+        if target_hwnd:
+            target_hwnd = int(target_hwnd)
+        if not controlfishing.start_follow(stop_event, target_hwnd=target_hwnd):
             print("跟随启动失败")
             return False
 
-        # 第四阶段：等待结果
+        # 第四阶段
         print("等待 dianjikongbai.png（成功）或 panduandiaoyu.png（逃走）...")
         last_print = time.time()
         result = None
