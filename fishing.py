@@ -117,12 +117,15 @@ def fish_logic():
             print("未同时找到两个鱼图")
             return False
 
-        # 第三阶段：启动跟随，使用环境变量传递的窗口句柄
+        # 第三阶段：启动跟随，必须从环境变量获取窗口句柄
         print("开始跟随...")
         stop_event = threading.Event()
-        target_hwnd = os.environ.get("FISHING_TARGET_HWND", None)
-        if target_hwnd:
-            target_hwnd = int(target_hwnd)
+        target_hwnd_str = os.environ.get("FISHING_TARGET_HWND")
+        if target_hwnd_str is None:
+            print("错误：未接收到目标窗口句柄，请通过UI选择钓鱼窗口")
+            return False
+        target_hwnd = int(target_hwnd_str)
+        print(f"接收到窗口句柄: {target_hwnd}")
         if not controlfishing.start_follow(stop_event, target_hwnd=target_hwnd):
             print("跟随启动失败")
             return False

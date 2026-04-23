@@ -27,7 +27,7 @@ class NeonMainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
         self.setGeometry(200, 100, 900, 700)
 
-        # 图标（可选）
+        # 图标
         if Path("Windowslogo.ico").exists():
             self.setWindowIcon(QIcon("Windowslogo.ico"))
         if Path("titlelogo.ico").exists():
@@ -94,11 +94,13 @@ class NeonMainWindow(QMainWindow):
         self.target_window_title = ""
         self.floating_log = FloatingLogWindow()
 
+        # 钓鱼相关
         self.fishing_process = None
         self.fishing_stdout_queue = queue.Queue()
         self.fishing_output_thread = None
         self.fishing_error_thread = None
         self.fishing_timer = None
+        self.fishing_thread = None   # 线程直接调用时使用
 
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(25)
@@ -111,9 +113,6 @@ class NeonMainWindow(QMainWindow):
         self.hotkey_signals = HotKeySignals()
         self.hotkey_signals.toggle_signal.connect(self.toggle_automation)
         self.start_hotkey_listener()
-
-        # 启动时不禁用自动检查，但可由菜单手动触发
-        # QTimer.singleShot(1500, self.check_for_updates)   # 可选
 
     # ---------- 全局热键 ----------
     def start_hotkey_listener(self):
@@ -276,68 +275,113 @@ class NeonMainWindow(QMainWindow):
         layout.addWidget(tip)
 
     def refresh_fishing_window_list(self):
-        """刷新钓鱼窗口下拉列表，排除自身"""
+        """刷新钓鱼窗口下拉列表，严格排除自身程序窗口"""
         import win32gui
         self.fishing_window_combo.clear()
-        current_title = self.windowTitle()
         def enum_cb(hwnd, _):
             if win32gui.IsWindowVisible(hwnd):
                 title = win32gui.GetWindowText(hwnd)
-                if title and title != current_title:
+                # 只显示标题包含“异环”，且不包含“异环薄荷AI”的窗口
+                if "异环" in title and "异环薄荷AI" not in title:
                     self.fishing_window_combo.addItem(title, hwnd)
         win32gui.EnumWindows(enum_cb, None)
+        if self.fishing_window_combo.count() == 0:
+            self.log_to_fishing("[提示] 未找到游戏窗口，请确认游戏已运行。")
 
     def get_selected_fishing_hwnd(self):
-        """获取当前选中的钓鱼窗口句柄"""
-        return self.fishing_window_combo.currentData()
+        hwnd = self.fishing_window_combo.currentData()
+        if hwnd:
+            import win32gui
+            if not win32gui.IsWindow(hwnd):
+                return None
+        return hwnd
 
     def start_fishing(self):
-        if self.fishing_process and self.fishing_process.poll() is None:
-            self.log_to_fishing("[警告] 钓鱼进程已在运行")
-            return
+        # 入口方法
         self._do_start_fishing()
 
     def _do_start_fishing(self):
-        if self.fishing_process and self.fishing_process.poll() is None:
-            self.log_to_fishing("[警告] 钓鱼进程已在运行")
-            return
-        hwnd = self.get_selected_fishing_hwnd()
-        if hwnd is None:
-            self.log_to_fishing("[错误] 请先选择一个目标窗口（点击“刷新窗口列表”并选中游戏窗口）")
-            return
-        script_path = os.path.join(os.path.dirname(__file__), "fishing.py")
-        if not os.path.exists(script_path):
-            self.log_to_fishing(f"[错误] 找不到钓鱼脚本: {script_path}")
-            return
-        env = os.environ.copy()
-        env["FISHING_TARGET_HWND"] = str(hwnd)
-        env["PYTHONUNBUFFERED"] = "1"
-        self.fishing_process = subprocess.Popen(
-            [sys.executable, "-u", script_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=0,
-            cwd=os.path.dirname(__file__),
-            env=env,
-            encoding='utf-8',
-            errors='replace'
-        )
-        self.start_fishing_btn.setEnabled(False)
-        self.stop_fishing_btn.setEnabled(True)
-        self.log_to_fishing(f"[系统] 钓鱼进程已启动 (PID: {self.fishing_process.pid})")
-        while not self.fishing_stdout_queue.empty():
-            try:
-                self.fishing_stdout_queue.get_nowait()
-            except:
-                break
-        self.fishing_output_thread = threading.Thread(target=self._read_fishing_output, daemon=True)
-        self.fishing_error_thread = threading.Thread(target=self._read_fishing_error, daemon=True)
-        self.fishing_output_thread.start()
-        self.fishing_error_thread.start()
-        self.fishing_timer = QTimer()
-        self.fishing_timer.timeout.connect(self._update_fishing_log)
-        self.fishing_timer.start(50)
+        if getattr(sys, 'frozen', False):
+            # 打包环境：直接调用模块，避免子进程
+            if hasattr(self, 'fishing_thread') and self.fishing_thread and self.fishing_thread.is_alive():
+                self.log_to_fishing("[警告] 钓鱼线程已在运行")
+                return
+            hwnd = self.get_selected_fishing_hwnd()
+            if hwnd is None:
+                self.log_to_fishing("[错误] 请先选择一个目标窗口（点击“刷新窗口列表”并选中游戏窗口）")
+                return
+            import fishing
+            os.environ["FISHING_TARGET_HWND"] = str(hwnd)
+            fishing.global_stop.clear()
+            self.fishing_thread = threading.Thread(target=fishing.main, daemon=True)
+            self.fishing_thread.start()
+            self.start_fishing_btn.setEnabled(False)
+            self.stop_fishing_btn.setEnabled(True)
+            self.log_to_fishing("[系统] 钓鱼已启动 (直接调用)")
+        else:
+            # 开发环境：子进程
+            if self.fishing_process and self.fishing_process.poll() is None:
+                self.log_to_fishing("[警告] 钓鱼进程已在运行")
+                return
+            hwnd = self.get_selected_fishing_hwnd()
+            if hwnd is None:
+                self.log_to_fishing("[错误] 请先选择一个目标窗口")
+                return
+            script_path = os.path.join(os.path.dirname(__file__), "fishing.py")
+            if not os.path.exists(script_path):
+                self.log_to_fishing(f"[错误] 找不到钓鱼脚本: {script_path}")
+                return
+            env = os.environ.copy()
+            env["FISHING_TARGET_HWND"] = str(hwnd)
+            env["PYTHONUNBUFFERED"] = "1"
+            self.fishing_process = subprocess.Popen(
+                [sys.executable, "-u", script_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=0,
+                cwd=os.path.dirname(__file__),
+                env=env,
+                encoding='utf-8',
+                errors='replace'
+            )
+            self.start_fishing_btn.setEnabled(False)
+            self.stop_fishing_btn.setEnabled(True)
+            self.log_to_fishing(f"[系统] 钓鱼进程已启动 (PID: {self.fishing_process.pid})")
+            # 读取输出（仅子进程需要）
+            self.fishing_output_thread = threading.Thread(target=self._read_fishing_output, daemon=True)
+            self.fishing_error_thread = threading.Thread(target=self._read_fishing_error, daemon=True)
+            self.fishing_output_thread.start()
+            self.fishing_error_thread.start()
+            self.fishing_timer = QTimer()
+            self.fishing_timer.timeout.connect(self._update_fishing_log)
+            self.fishing_timer.start(50)
+
+    def stop_fishing(self):
+        if getattr(sys, 'frozen', False):
+            # 打包环境：停止线程
+            if hasattr(self, 'fishing_thread') and self.fishing_thread and self.fishing_thread.is_alive():
+                import fishing
+                fishing.global_stop.set()
+                self.fishing_thread.join(timeout=2)
+                self.log_to_fishing("[系统] 钓鱼线程已停止")
+            else:
+                self.log_to_fishing("[系统] 没有运行中的钓鱼线程")
+            self._on_fishing_finished()
+        else:
+            # 开发环境：终止子进程
+            if self.fishing_process and self.fishing_process.poll() is None:
+                self.log_to_fishing("[系统] 正在终止钓鱼进程...")
+                self.fishing_process.terminate()
+                try:
+                    self.fishing_process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.fishing_process.kill()
+                    self.log_to_fishing("[系统] 强制终止钓鱼进程")
+                self.log_to_fishing("[系统] 钓鱼进程已终止")
+            else:
+                self.log_to_fishing("[系统] 没有运行中的钓鱼进程")
+            self._on_fishing_finished()
 
     def _read_fishing_output(self):
         if not self.fishing_process:
@@ -373,27 +417,16 @@ class NeonMainWindow(QMainWindow):
         if self.fishing_process and self.fishing_process.poll() is not None:
             self._on_fishing_finished()
 
-    def stop_fishing(self):
-        if self.fishing_process and self.fishing_process.poll() is None:
-            self.log_to_fishing("[系统] 正在终止钓鱼进程...")
-            self.fishing_process.terminate()
-            try:
-                self.fishing_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.fishing_process.kill()
-                self.log_to_fishing("[系统] 强制终止钓鱼进程")
-            self.log_to_fishing("[系统] 钓鱼进程已终止")
-        else:
-            self.log_to_fishing("[系统] 没有运行中的钓鱼进程")
-        self._on_fishing_finished()
-
     def _on_fishing_finished(self):
-        if self.fishing_timer and self.fishing_timer.isActive():
+        if hasattr(self, 'fishing_timer') and self.fishing_timer and self.fishing_timer.isActive():
             self.fishing_timer.stop()
         self.start_fishing_btn.setEnabled(True)
         self.stop_fishing_btn.setEnabled(False)
-        self.fishing_process = None
-        self.log_to_fishing("[系统] 钓鱼进程已退出")
+        if not getattr(sys, 'frozen', False):
+            self.fishing_process = None
+        else:
+            self.fishing_thread = None
+        self.log_to_fishing("[系统] 钓鱼已停止")
 
     def log_to_fishing(self, msg):
         from utils import log_message
@@ -515,6 +548,12 @@ class NeonMainWindow(QMainWindow):
         if self.automation_thread and self.automation_thread.isRunning():
             self.automation_thread.stop()
             self.automation_thread.wait(1000)
-        if self.fishing_process and self.fishing_process.poll() is None:
-            self.stop_fishing()
+        if getattr(sys, 'frozen', False):
+            if hasattr(self, 'fishing_thread') and self.fishing_thread and self.fishing_thread.is_alive():
+                import fishing
+                fishing.global_stop.set()
+                self.fishing_thread.join(1)
+        else:
+            if self.fishing_process and self.fishing_process.poll() is None:
+                self.stop_fishing()
         event.accept()

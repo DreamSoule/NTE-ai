@@ -20,23 +20,11 @@ IMG_DIR = "fishingimages"
 TEMPLATE_HS = resource_path(os.path.join(IMG_DIR, "hs.png"))
 TEMPLATE_DDS = resource_path(os.path.join(IMG_DIR, "dds.png"))
 
-WINDOW_TITLE = "异环"
-ROI = (597, 61, 1328, 85)          # 根据实际窗口调整
+ROI = (597, 61, 1328, 85)
 MATCH_THRESH = 0.6
 CAPTURE_DELAY = 0.0
 
 pos_queue = queue.Queue(maxsize=1)
-
-def get_hwnd():
-    """备用自动查找（不使用 PID 比较，仅通过标题排除自身）"""
-    def cb(hwnd, lst):
-        if win32gui.IsWindowVisible(hwnd):
-            title = win32gui.GetWindowText(hwnd)
-            if "异环" in title and "异环薄荷AI" not in title:
-                lst.append(hwnd)
-    lst = []
-    win32gui.EnumWindows(cb, lst)
-    return lst[0] if lst else None
 
 def find_center(gray, tpl, th):
     res = cv2.matchTemplate(gray, tpl, cv2.TM_CCOEFF_NORMED)
@@ -70,6 +58,7 @@ def capture_worker(hwnd, hs_tpl, dds_tpl, stop_event):
                         pass
         except:
             pass
+        time.sleep(CAPTURE_DELAY)
 
 def control_worker(stop_event):
     DEAD_ZONE = 2
@@ -186,19 +175,26 @@ def control_worker(stop_event):
     release_all()
 
 def start_follow(stop_event, target_hwnd=None):
+    # 必须提供窗口句柄，不再自动查找
     if target_hwnd is None:
-        hwnd = get_hwnd()
-    else:
-        hwnd = target_hwnd
-    if not hwnd:
-        print("找不到窗口")
+        print("错误：未传入目标窗口句柄，请通过UI选择钓鱼窗口")
         return False
-    print(f"找到窗口句柄: {hwnd}")
+    hwnd = target_hwnd
+    if not win32gui.IsWindow(hwnd):
+        print(f"错误：窗口句柄 {hwnd} 无效")
+        return False
+    print(f"使用窗口句柄: {hwnd}")
+
+    # 加载模板
     hs = cv2.imread(TEMPLATE_HS, cv2.IMREAD_GRAYSCALE)
     dds = cv2.imread(TEMPLATE_DDS, cv2.IMREAD_GRAYSCALE)
-    if hs is None or dds is None:
-        print("模板图片不存在，请检查 fishingimages 文件夹")
+    if hs is None:
+        print(f"错误：无法读取 hs.png，路径={TEMPLATE_HS}")
         return False
+    if dds is None:
+        print(f"错误：无法读取 dds.png，路径={TEMPLATE_DDS}")
+        return False
+
     t1 = threading.Thread(target=capture_worker, args=(hwnd, hs, dds, stop_event), daemon=True)
     t2 = threading.Thread(target=control_worker, args=(stop_event,), daemon=True)
     t1.start()
