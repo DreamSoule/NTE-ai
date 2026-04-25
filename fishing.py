@@ -8,9 +8,13 @@ import win32gui
 from PIL import ImageGrab
 import cv2
 import numpy as np
+<<<<<<< HEAD
 import controlfishing_v2 as controlfishing
+=======
+import controlfishing as controlfishing
+>>>>>>> a3f7a6d (v1.0.8: 优化钓鱼逻辑，增加超时退出；修复日志浮窗位置；排除自身窗口；F12控制钓鱼)
 import traceback
-
+import buy_bait
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -25,7 +29,7 @@ PATH_DIANJIKONGBAI = resource_path(os.path.join(IMG_DIR, "dianjikongbai.png"))
 PATH_PANDUANDIAOYU = resource_path(os.path.join(IMG_DIR, "panduandiaoyu.png"))
 PATH_YU1 = resource_path(os.path.join(IMG_DIR, "yu1.png"))
 PATH_YU = resource_path(os.path.join(IMG_DIR, "yu.png"))
-
+PATH_YUER = resource_path(os.path.join(IMG_DIR, "yuer.png"))
 MATCH_THRESH = 0.7
 global_stop = threading.Event()
 fish_count = 0
@@ -87,8 +91,33 @@ def fish_logic():
                 continue
             pos = find_image(PATH_PANDUANDIAOYU)
             if pos:
-                print("发现 panduandiaoyu.png，按F退出监测")
-                pydirectinput.press('f')
+                print("发现 panduandiaoyu.png，进入持续按F逻辑")
+                # 提前获取窗口句柄（第二阶段也需要）
+                target_hwnd_str = os.environ.get("FISHING_TARGET_HWND")
+                target_hwnd = int(target_hwnd_str) if target_hwnd_str else None
+                if not target_hwnd:
+                    print("错误：未获取到窗口句柄，无法继续")
+                    return False
+                bait_bought = False  # 防止重复购买鱼饵
+                while not global_stop.is_set():
+                    # 检测 panduandiaoyu 是否仍然存在
+                    still_here = find_image_in_window(PATH_PANDUANDIAOYU, target_hwnd, timeout=0)
+                    if not still_here:
+                        print("panduandiaoyu 已消失，按F退出并结束第一阶段")
+                        pydirectinput.press('f')
+                        break
+                    # 检测鱼饵不足提示 yuer.png
+                    if not bait_bought:
+                        yuer_pos = find_image_in_window(PATH_YUER, target_hwnd, timeout=0)
+                        if yuer_pos:
+                            print("检测到鱼饵不足，执行购买鱼饵流程")
+                            buy_bait.do_buy_bait(target_hwnd)
+                            bait_bought = True  # 购买后标记为已买，避免多次触发
+                            # 购买完成后继续循环按F，直到 panduandiaoyu 消失
+                    # 按下 F（每次循环都按，确保界面尽快消失）
+                    pydirectinput.press('f')
+                    time.sleep(0.3)  # 留一点间隔，避免按键风暴
+                # 退出上述 while 后，break 第一阶段的 while 循环，进入第二阶段
                 break
             if time.time() - last_prompt > 3:
                 print("监测中... (等待任意图片)")
@@ -192,6 +221,48 @@ def main():
         pydirectinput.keyUp('a')
         pydirectinput.keyUp('d')
         print(f"总共钓鱼 {fish_count} 条")
+def find_image_in_window(template_path, hwnd, timeout=0, interval=0.2):
+    if not hwnd:
+        return None
+    rect = win32gui.GetClientRect(hwnd)
+    left_top = win32gui.ClientToScreen(hwnd, (0, 0))
+    right_bottom = win32gui.ClientToScreen(hwnd, (rect[2], rect[3]))
+    client_rect = (left_top[0], left_top[1], right_bottom[0], right_bottom[1])
 
+    # 一次性检测（timeout == 0）
+    if timeout == 0:
+        try:
+            img = ImageGrab.grab(bbox=client_rect)
+            gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+            template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+            if template is None:
+                return None
+            res = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            if max_val >= MATCH_THRESH:
+                h, w = template.shape
+                return (max_loc[0] + w//2, max_loc[1] + h//2)
+        except:
+            pass
+        return None
+
+    # 超时循环模式（timeout > 0）
+    start = time.time()
+    while (time.time() - start) < timeout:
+        try:
+            img = ImageGrab.grab(bbox=client_rect)
+            gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+            template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+            if template is None:
+                return None
+            res = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            if max_val >= MATCH_THRESH:
+                h, w = template.shape
+                return (max_loc[0] + w//2, max_loc[1] + h//2)
+        except:
+            pass
+        time.sleep(interval)
+    return None
 if __name__ == "__main__":
     main()

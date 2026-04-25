@@ -17,8 +17,12 @@ HS_TEMPLATE_PATH = "fishingimages/hs.png"
 HS_MATCH_THRESHOLD = 0.6
 
 # ROI from controlfishing.py — window-relative coordinates
+<<<<<<< HEAD
 ROI = (597, 61, 1328, 85)
 
+=======
+ROI =(605, 61, 1322,88)
+>>>>>>> a3f7a6d (v1.0.8: 优化钓鱼逻辑，增加超时退出；修复日志浮窗位置；排除自身窗口；F12控制钓鱼)
 
 # HSV thresholds for the green scoring zone
 # Bright cyan-green color of the zone
