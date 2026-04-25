@@ -23,40 +23,28 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.dirname(os.path.abspath(__file__))  # 开发环境则取当前文件所在目录
     return os.path.join(base_path, relative_path)  # 拼接完整路径并返回
-
-
 # ---------- 配置参数----------
-
 IMG_DIR = "fishingimages"                                     # 存放模板图片的文件夹名称
 TEMPLATE_HS = resource_path(os.path.join(IMG_DIR, "hs.png"))  # 黄色标记模板图片的完整路径
-
 # 钓鱼区域内 ROI（客户区相对坐标），根据 1920x1080 窗口设定
 ROI = (605, 61, 1322,88)          # (left, top, right, bottom) 钓鱼活动条所在矩形区域
-
 # 绿色评分区域的 HSV 颜色范围下限
 GREEN_HSV_LOWER = np.array([60, 100, 150])
 # 绿色评分区域的 HSV 颜色范围上限
 GREEN_HSV_UPPER = np.array([90, 255, 255])
-
 # 黄色标记模板匹配置信度阈值，高于此值认为匹配成功
 YELLOW_MATCH_THRESH = 0.6
-
 # 范围保持控制器参数（加速版）
 GREEN_BUFFER_PCT = 0.15          # 绿色区域缓冲区比例（左右各缩进 15%），更早介入调整
 PULSE_SCALE = 0.004              # 脉冲系数：每秒每像素的脉冲时长（秒/像素），移动快则脉冲长
 PULSE_MIN = 0.008                # 最小脉冲时长（8ms），确保轻推有效
 PULSE_MAX = 0.060                # 最大脉冲时长（60ms），限制单次移动距离避免过冲
 INTER_PULSE_SLEEP = 0.005        # 两次脉冲之间的间隔（5ms），提高响应频率
-
 # 首帧等待超时，防止 WGC 启动失败时无限等待
 FIRST_FRAME_TIMEOUT = 1.0        # 1 秒
-
 # 生产者-消费者队列，单槽位，丢弃旧数据保留最新
 detection_queue = queue.Queue(maxsize=1)
-
-
 # ---------- DWM 裁剪计算 ----------
-
 def get_client_crop(hwnd):
     """
     计算从 WGC 捕获的整个窗口画面中裁剪出纯客户区所需的偏移量。
@@ -72,7 +60,6 @@ def get_client_crop(hwnd):
         ctypes.sizeof(rect)                                               # 结构体大小
     )
     dwm_left, dwm_top = rect.left, rect.top                               # DWM 报告的窗口左上角坐标（屏幕坐标）
-
     client_origin = win32gui.ClientToScreen(hwnd, (0, 0))                 # 客户区左上角在屏幕上的坐标
     client_left, client_top = client_origin                               # 客户区左上角屏幕坐标
 
@@ -86,8 +73,6 @@ def get_client_crop(hwnd):
         'width': client_w,                 # 客户区宽度
         'height': client_h,                # 客户区高度
     }
-
-
 # ---------- 检测函数 ----------
 
 def detect_green_zone(frame_rgb):
@@ -101,7 +86,6 @@ def detect_green_zone(frame_rgb):
     # 检查 ROI 是否在图像范围内
     if roi_r > w or roi_b > h or roi_l < 0 or roi_t < 0:
         return None                                                      # 超出范围，返回 None
-
     roi_img = frame_rgb[roi_t:roi_b, roi_l:roi_r]                         # 截取 ROI 区域
     hsv = cv2.cvtColor(roi_img, cv2.COLOR_RGB2HSV)                        # 转换为 HSV 颜色空间
     mask = cv2.inRange(hsv, GREEN_HSV_LOWER, GREEN_HSV_UPPER)             # 创建绿色区域的二值掩膜
@@ -248,132 +232,40 @@ class CaptureWorker:
 
 def control_worker(stop_event):
     """
-    控制线程的主体函数，实现速度自适应控制。
-    当绿色区域移动快时加大脉冲强度，确保黄色标记跟上。
+    最快响应：根据最新偏差，持续按键直到偏差小于死区。
     """
-    key_a_down = False           # A 键当前是否按住
-    key_d_down = False           # D 键当前是否按住
-
-    # 历史数据用于计算绿色区域移动速度
-    prev_green_center = None     # 上一帧绿色区域中心 X 坐标
-    prev_timestamp = None        # 上一帧的时间戳
-
-    # 速度自适应参数
-    SPEED_SLOW = 50              # 低速阈值（像素/秒），低于此值认为是低速
-    SPEED_FAST = 150             # 高速阈值（像素/秒），高于此值认为是高速
-    PULSE_SCALE_SLOW = 0.004     # 低速时的脉冲系数（秒/像素）
-    PULSE_SCALE_FAST = 0.010     # 高速时的脉冲系数（秒/像素）
-    BASE_PULSE_MIN = 0.008       # 最小脉冲时长（秒）
-    BASE_PULSE_MAX = 0.080       # 最大脉冲时长（秒）
-
-    def scale_pulse(overshoot_px, speed):
-        """
-        根据速度动态计算脉冲时长。
-        :param overshoot_px: 超出安全区的像素距离
-        :param speed: 绿色区域当前移动速度（像素/秒）
-        :return: 脉冲时长（秒）
-        """
-        # 根据速度等级确定脉冲系数
-        if speed >= SPEED_FAST:
-            pulse_scale = PULSE_SCALE_FAST          # 高速时使用大系数
-        elif speed <= SPEED_SLOW:
-            pulse_scale = PULSE_SCALE_SLOW          # 低速时使用小系数
-        else:
-            # 线性插值
-            ratio = (speed - SPEED_SLOW) / (SPEED_FAST - SPEED_SLOW)
-            pulse_scale = PULSE_SCALE_SLOW + ratio * (PULSE_SCALE_FAST - PULSE_SCALE_SLOW)
-        pulse = overshoot_px * pulse_scale           # 脉冲时长 = 超出距离 × 系数
-        # 限制在最小最大值之间
-        return max(BASE_PULSE_MIN, min(BASE_PULSE_MAX, pulse))
-
-    def release_all():
-        """
-        释放所有已按下的方向键。
-        """
-        nonlocal key_a_down, key_d_down
-        if key_a_down:                               # 如果按着 A
-            pydirectinput.keyUp('a')                 # 松开 A
-            key_a_down = False                       # 标记已松开
-        if key_d_down:                               # 如果按着 D
-            pydirectinput.keyUp('d')                 # 松开 D
-            key_d_down = False                       # 标记已松开
-
-    # 主循环，直到停止事件被设置
+    DEAD_ZONE = 3  # 死区，偏差绝对值小于此值停止按键
     while not stop_event.is_set():
         try:
-            # 从队列获取检测结果，超时 0.05 秒（防止死循环）
-            yellow_x, green_left, green_right = detection_queue.get(timeout=0.05)
-        except queue.Empty:                          # 队列为空则继续循环
+            yellow_x, green_left, green_right = detection_queue.get_nowait()
+        except queue.Empty:
+            # 无新数据时，不释放按键，保持当前状态（不主动释放，避免抖动）
             continue
 
-        # 计算绿色区域中心 X 坐标
         green_center = (green_left + green_right) // 2
+        deviation = yellow_x - green_center
+        abs_dev = abs(deviation)
 
-        # 计算绿色区域移动速度（像素/秒）
-        current_time = time.time()                   # 当前时间戳
-        speed = 0                                    # 初始速度为 0
-        if prev_green_center is not None and prev_timestamp is not None:
-            dt = current_time - prev_timestamp       # 时间差
-            if dt > 0:
-                speed = abs(green_center - prev_green_center) / dt  # 速度 = 位移 / 时间
-        # 更新上一次的状态
-        prev_green_center = green_center
-        prev_timestamp = current_time
+        if abs_dev <= DEAD_ZONE:
+            # 偏差足够小，释放所有键
+            pydirectinput.keyUp('a')
+            pydirectinput.keyUp('d')
+        elif deviation > 0:
+            # 黄色偏右，按A左移
+            pydirectinput.keyUp('d')
+            pydirectinput.keyDown('a')
+        else:
+            # 黄色偏左，按D右移
+            pydirectinput.keyUp('a')
+            pydirectinput.keyDown('d')
+        # 无需额外延时，循环尽可能快
+    # 退出清理
 
-        # 计算安全区边界（绿色区域左右各缩进缓冲区）
-        green_width = green_right - green_left        # 绿色区域宽度
-        buffer_px = int(green_width * GREEN_BUFFER_PCT)  # 缓冲区像素数
-        target_left = green_left + buffer_px          # 安全区左边界
-        target_right = green_right - buffer_px        # 安全区右边界
-        if target_left >= target_right:               # 缓冲区过大导致无安全区时，退回到原始绿色边界
-            target_left = green_left
-            target_right = green_right
+    # 退出时释放所有键
+    pydirectinput.keyUp('a')
+    pydirectinput.keyUp('d')
 
-        # 判断黄色标记位置并执行相应控制
-        if yellow_x < target_left:                    # 黄色标记偏左，需要向右移动（按 D）
-            overshoot = target_left - yellow_x        # 超出左安全区的距离
-            # 如果超出距离很小且速度很慢，用单次脉冲微调，避免过冲
-            if overshoot < int(green_width * 0.1) and speed < SPEED_SLOW:
-                release_all()                         # 先释放所有按键
-                pulse = scale_pulse(overshoot, speed) # 计算脉冲时长
-                pydirectinput.keyDown('d')            # 按下 D
-                time.sleep(pulse)                     # 保持脉冲时长
-                pydirectinput.keyUp('d')              # 松开 D
-                time.sleep(INTER_PULSE_SLEEP)         # 短暂间隔
-            else:
-                # 否则连续按住 D 键（加速追赶）
-                if key_a_down:                        # 如果当前按着 A，先释放 A
-                    release_all()
-                if not key_d_down:                    # 如果 D 没有按住
-                    pydirectinput.keyDown('d')        # 按下 D
-                    key_d_down = True                 # 标记 D 已按住
-        elif yellow_x > target_right:                 # 黄色标记偏右，需要向左移动（按 A）
-            overshoot = yellow_x - target_right       # 超出右安全区的距离
-            if overshoot < int(green_width * 0.1) and speed < SPEED_SLOW:
-                release_all()
-                pulse = scale_pulse(overshoot, speed)
-                pydirectinput.keyDown('a')            # 按下 A
-                time.sleep(pulse)
-                pydirectinput.keyUp('a')
-                time.sleep(INTER_PULSE_SLEEP)
-            else:
-                if key_d_down:                        # 如果当前按着 D，先释放
-                    release_all()
-                if not key_a_down:                    # 如果 A 没有按住
-                    pydirectinput.keyDown('a')        # 按下 A
-                    key_a_down = True                 # 标记 A 已按住
-        else:                                          # 黄色标记在安全区内
-            release_all()                             # 释放所有按键
-
-        # 如果没有按键处于按下状态，短暂休眠减少 CPU 占用
-        if not (key_a_down or key_d_down):
-            time.sleep(0.005)
-
-    # 循环结束时释放所有按键，确保干净退出
-    release_all()
-
-
-# ---------- 公开 API（与原始 controlfishing.py 相同）----------
+# ---------- ----------
 
 def start_follow(stop_event, target_hwnd=None):
     """
