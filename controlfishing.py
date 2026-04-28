@@ -285,9 +285,9 @@ class CaptureWorker:
 
 def control_worker(stop_event):
     """
-    最快响应：根据最新偏差，持续按键直到偏差小于死区。
+    最快响应：根据最新偏差持续按键；当黄色进入绿色中心 45% 区域时暂停移动。
     """
-    DEAD_ZONE = 3  # 死区，偏差绝对值小于此值停止按键
+    CENTER_STOP_RATIO = 0.45  # 中心停止区比例（绿色宽度的 45%）
     while not stop_event.is_set():
         try:
             yellow_x, green_left, green_right = detection_queue.get_nowait()
@@ -296,11 +296,13 @@ def control_worker(stop_event):
             continue
 
         green_center = (green_left + green_right) // 2
+        green_width = max(1, green_right - green_left + 1)
         deviation = yellow_x - green_center
         abs_dev = abs(deviation)
+        center_stop_half = max(1, int(green_width * CENTER_STOP_RATIO * 0.5))
 
-        if abs_dev <= DEAD_ZONE:
-            # 偏差足够小，释放所有键
+        if abs_dev <= center_stop_half:
+            # 黄色位于绿色中心 45% 区域内，释放所有键暂停移动
             pydirectinput.keyUp('a')
             pydirectinput.keyUp('d')
         elif deviation > 0:
